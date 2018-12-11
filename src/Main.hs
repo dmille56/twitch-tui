@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric, OverloadedStrings #-}
 
 module Main where
 
@@ -16,6 +16,11 @@ import System.Process(system)
 
 import Data.Aeson
 import qualified Network.HTTP.Req as R
+import qualified Data.ByteString as ByteString
+import Control.Monad.IO.Class
+import Data.Default.Class
+import GHC.Generics
+import Control.Exception (throwIO)
 
 import qualified Data.FuzzySet as FuzzySet
 
@@ -89,7 +94,7 @@ instance Filterer DefaultFilterer where
           matches = case (tagLessText, results) of
                       ("", _) -> tagFilteredItems
                       (_, []) -> []
-                      (_, _) -> mapMaybe ((getItem getText tagFilteredItems). snd) results
+                      (_, _) -> mapMaybe (getItem getText tagFilteredItems . snd) results
 
           getItem f list item = List.find (\x -> f x == item) list
 
@@ -251,5 +256,73 @@ main = void $ runApp initialState
 
 -- API Test stuff
 
-testClientId = "p0gch4mp101fy451do9uod1s1x9i4a"
-apiEndpoint = "https://api.twitch.tv/helix"
+testClientId = "phiay4sq36lfv9zu7cbqwz2ndnesfd8"
+apiBaseUrl = "api.twitch.tv"
+apiVersion = "helix"
+
+data TwitchStreamsData = TwitchStreamsData { _TwitchStreamsData_data :: [TwitchStreamsDataUser],
+                                             _TwitchStreamsData_pagination :: TwitchStreamsDataPagination
+                                           } deriving (Generic, Show)
+
+data TwitchStreamsDataPagination = TwitchStreamsDataPagination { _TwitchStreamsDataPagination_cursor :: Text } deriving (Generic, Show)
+
+data TwitchStreamsDataUser = TwitchStreamsDataUser { _TwitchStreamsDataUser_id :: Text,
+                                                     _TwitchStreamsDataUser_user_id :: Text,
+                                                     _TwitchStreamsDataUser_user_name :: Text,
+                                                     _TwitchStreamsDataUser_game_id :: Text,
+                                                     _TwitchStreamsDataUser_community_ids :: [Text],
+                                                     _TwitchStreamsDataUser_type :: Text,
+                                                     _TwitchStreamsDataUser_title :: Text,
+                                                     _TwitchStreamsDataUser_viewer_count :: Int,
+                                                     _TwitchStreamsDataUser_started_at :: Text,
+                                                     _TwitchStreamsDataUser_language :: Text,
+                                                     _TwitchStreamsDataUser_thumbnail_url :: Text
+                                                   } deriving (Generic, Show)
+
+instance FromJSON TwitchStreamsData where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 19 }
+  
+instance ToJSON TwitchStreamsData where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 19 }
+  
+instance FromJSON TwitchStreamsDataUser where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 23 }
+  
+instance ToJSON TwitchStreamsDataUser where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 23 }
+  
+instance FromJSON TwitchStreamsDataPagination where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 29 }
+  
+instance ToJSON TwitchStreamsDataPagination where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 29 }
+  
+--TODO: maybe handle http exceptions in the future?
+instance R.MonadHttp IO where
+  handleHttpException = throwIO
+
+api = apiTest testClientId ["ninja"]
+api2 = apiTest2 testClientId ["ninja"]
+
+apiTest :: ByteString.ByteString -> [Text] -> IO ()
+apiTest clientId usernames = R.runReq def $ do
+  let options = (R.header "Client-ID" clientId) <> usersQuery
+      usersQuery = mconcat $ map ("user_login" R.=:) usernames
+  r <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.jsonResponse options
+  liftIO $ print (R.responseBody r :: Value)
+
+apiTest2 :: ByteString.ByteString -> [Text] -> IO (Either Text TwitchStreamsData)
+apiTest2 clientId usernames = do
+  let options = (R.header "Client-ID" clientId) <> usersQuery
+      usersQuery = mconcat $ map ("user_login" R.=:) usernames
+      
+  r <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.bsResponse options
+  
+  let maybe :: Maybe TwitchStreamsData
+      maybe = decodeStrict' (R.responseBody r) :: Maybe TwitchStreamsData
+
+      result :: Either Text TwitchStreamsData
+      result = case maybe of
+                 Just x -> Right x
+                 Nothing -> Left "Error couldn't deserialize json into TwitchStreamsData"
+  return result

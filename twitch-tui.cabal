@@ -26,4 +26,6 @@ executable twitch-tui
                        fuzzyset,
                        process,
                        aeson,
-                       req
+                       req,
+                       data-default-class,
+                       bytestring
