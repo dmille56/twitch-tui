@@ -20,7 +20,7 @@ import qualified Data.ByteString as ByteString
 import Control.Monad.IO.Class
 import Data.Default.Class
 import GHC.Generics
-import Control.Exception (throwIO)
+import Control.Exception
 
 import qualified Data.FuzzySet as FuzzySet
 
@@ -297,12 +297,12 @@ instance FromJSON TwitchStreamsDataPagination where
 instance ToJSON TwitchStreamsDataPagination where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 29 }
   
---TODO: maybe handle http exceptions in the future?
 instance R.MonadHttp IO where
   handleHttpException = throwIO
 
-api = apiTest testClientId ["ninja"]
-api2 = apiTest2 testClientId ["ninja"]
+testList = ["ninja"]
+api = apiTest testClientId testList
+api2 = apiWithExceptionHandling testClientId testList
 
 apiTest :: ByteString.ByteString -> [Text] -> IO ()
 apiTest clientId usernames = R.runReq def $ do
@@ -311,18 +311,18 @@ apiTest clientId usernames = R.runReq def $ do
   r <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.jsonResponse options
   liftIO $ print (R.responseBody r :: Value)
 
-apiTest2 :: ByteString.ByteString -> [Text] -> IO (Either Text TwitchStreamsData)
+apiTest2 :: ByteString.ByteString -> [Text] -> IO (Maybe TwitchStreamsData)
 apiTest2 clientId usernames = do
   let options = (R.header "Client-ID" clientId) <> usersQuery
       usersQuery = mconcat $ map ("user_login" R.=:) usernames
-      
-  r <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.bsResponse options
-  
-  let maybe :: Maybe TwitchStreamsData
-      maybe = decodeStrict' (R.responseBody r) :: Maybe TwitchStreamsData
+  request <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.bsResponse options
+  let maybe = decodeStrict' (R.responseBody request) :: Maybe TwitchStreamsData
+  return maybe
 
-      result :: Either Text TwitchStreamsData
-      result = case maybe of
-                 Just x -> Right x
-                 Nothing -> Left "Error couldn't deserialize json into TwitchStreamsData"
-  return result
+apiWithExceptionHandling :: ByteString.ByteString -> [Text] -> IO (Either Text TwitchStreamsData)
+apiWithExceptionHandling clientId usernames = do
+  query <- try (apiTest2 clientId usernames) :: IO (Either SomeException (Maybe TwitchStreamsData))
+  case query of
+    Left error -> return . Left . T.pack $ show error
+    Right (Just sData) -> return $ Right sData
+    Right (Nothing) -> return $ Left "Error couldn't deserialize json into TwitchStreamsData"
