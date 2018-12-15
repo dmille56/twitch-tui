@@ -31,6 +31,9 @@ data Event = QuitEvent | PreviousItemEvent | NextItemEvent | FilterItemsEvent Ch
 data DefaultFilterer = DefaultFilterer { _DefaultFilterer_filterTags :: Bool
                                          }
 
+instance Default DefaultFilterer where
+  def = DefaultFilterer True
+
 data TwitchStreamInfo = TwitchStreamInfo { _TwitchStreamInfo_name :: Text,
                                            _TwitchStreamInfo_tags :: Tags
                                          } deriving (Show)
@@ -179,7 +182,7 @@ handleEventFilterView state (AppEvent FilterItemsApplyEvent) = continue $ state 
         filterText = _AppState_filterText state
         
         filteredStreams = getMatches filterer filterText streams 
-          where filterer = DefaultFilterer { _DefaultFilterer_filterTags = True }
+          where filterer = def :: DefaultFilterer
                 unfiltered = _AppState_streams state
 
 handleEventFilterView state (AppEvent (FilterItemsEvent char)) = handleEventFilterView state { _AppState_filterText = filterText} $ AppEvent FilterItemsApplyEvent
@@ -256,6 +259,7 @@ main = void $ runApp initialState
 
 -- API Test stuff
 
+testClientId :: ByteString.ByteString
 testClientId = "phiay4sq36lfv9zu7cbqwz2ndnesfd8"
 apiBaseUrl = "api.twitch.tv"
 apiVersion = "helix"
@@ -296,33 +300,69 @@ instance FromJSON TwitchStreamsDataPagination where
   
 instance ToJSON TwitchStreamsDataPagination where
   toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 29 }
+
+-- https://api.twitch.tv/helix/games/top
+
+data TwitchTopGamesData = TwitchTopGamesData { _TwitchTopGamesData_data :: [TwitchTopGamesDataGame],
+                                               _TwitchTopGamesData_pagination :: TwitchStreamsDataPagination
+                                             } deriving (Generic, Show)
+
+--      "id": "493057",
+--      "name": "PLAYERUNKNOWN'S BATTLEGROUNDS",
+--      "box_art_url": "https://static-cdn.jtvnw.net/ttv-boxart/PLAYERUNKNOWN%27S%20BATTLEGROUNDS-{width}x{height}.jpg"
+data TwitchTopGamesDataGame = TwitchTopGamesDataGame { _TwitchTopGamesDataGame_id :: Text,
+                                                       _TwitchTopGamesDataGame_name :: Text,
+                                                       _TwitchTopGamesDataGame_box_art_url :: Text
+                                                     } deriving (Generic, Show)
+
+instance FromJSON TwitchTopGamesData where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 20 }
+  
+instance ToJSON TwitchTopGamesData where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 20 }
+  
+instance FromJSON TwitchTopGamesDataGame where
+  parseJSON = genericParseJSON defaultOptions { fieldLabelModifier = drop 24 }
+  
+instance ToJSON TwitchTopGamesDataGame where
+  toJSON = genericToJSON defaultOptions { fieldLabelModifier = drop 24 }
   
 instance R.MonadHttp IO where
   handleHttpException = throwIO
 
+testCommunityIds, testGameIds, testList :: [Text]
+testCommunityIds = []
+testGameIds = ["21779"] -- league of legends
 testList = ["ninja"]
-api = apiTest testClientId testList
-api2 = apiWithExceptionHandling testClientId testList
 
-apiTest :: ByteString.ByteString -> [Text] -> IO ()
-apiTest clientId usernames = R.runReq def $ do
-  let options = (R.header "Client-ID" clientId) <> usersQuery
+getStreamsDataWithExceptions :: ByteString.ByteString -> [Text] -> [Text] -> IO (Maybe TwitchStreamsData)
+getStreamsDataWithExceptions clientId gameIds usernames = do
+  let options = (R.header "Client-ID" clientId) <> usersQuery <> gameIdsQuery
       usersQuery = mconcat $ map ("user_login" R.=:) usernames
-  r <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.jsonResponse options
-  liftIO $ print (R.responseBody r :: Value)
-
-apiTest2 :: ByteString.ByteString -> [Text] -> IO (Maybe TwitchStreamsData)
-apiTest2 clientId usernames = do
-  let options = (R.header "Client-ID" clientId) <> usersQuery
-      usersQuery = mconcat $ map ("user_login" R.=:) usernames
+      gameIdsQuery = mconcat $ map ("game_id" R.=:) gameIds
   request <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "streams") R.NoReqBody R.bsResponse options
   let maybe = decodeStrict' (R.responseBody request) :: Maybe TwitchStreamsData
   return maybe
 
-apiWithExceptionHandling :: ByteString.ByteString -> [Text] -> IO (Either Text TwitchStreamsData)
-apiWithExceptionHandling clientId usernames = do
-  query <- try (apiTest2 clientId usernames) :: IO (Either SomeException (Maybe TwitchStreamsData))
+getStreamsData :: ByteString.ByteString -> [Text] -> [Text] -> IO (Either Text TwitchStreamsData)
+getStreamsData clientId gameIds usernames = do
+  query <- try (getStreamsDataWithExceptions clientId gameIds usernames) :: IO (Either SomeException (Maybe TwitchStreamsData))
   case query of
     Left error -> return . Left . T.pack $ show error
     Right (Just sData) -> return $ Right sData
     Right (Nothing) -> return $ Left "Error couldn't deserialize json into TwitchStreamsData"
+
+getTopGamesDataWithExceptions :: ByteString.ByteString -> IO (Maybe TwitchTopGamesData)
+getTopGamesDataWithExceptions clientId = do
+  let options = (R.header "Client-ID" clientId)
+  request <- R.req R.GET (R.https apiBaseUrl R./: apiVersion R./: "games" R./: "top") R.NoReqBody R.bsResponse options
+  let maybe = decodeStrict' (R.responseBody request) :: Maybe TwitchTopGamesData
+  return maybe
+
+getTopGamesData :: ByteString.ByteString -> IO (Either Text TwitchTopGamesData)
+getTopGamesData clientId = do
+  query <- try (getTopGamesDataWithExceptions clientId) :: IO (Either SomeException (Maybe TwitchTopGamesData))
+  case query of
+    Left error -> return . Left . T.pack $ show error
+    Right (Just sData) -> return $ Right sData
+    Right (Nothing) -> return $ Left "Error couldn't deserialize json into TwitchTopGamesData"
